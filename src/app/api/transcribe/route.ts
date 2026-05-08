@@ -16,8 +16,9 @@ async function groq(path: string, body: unknown) {
 }
 
 async function transcribe(file: File): Promise<string> {
+  // Preserve the original filename/extension so Groq detects the format correctly
   const form = new FormData()
-  form.append('file', file, 'recording.wav')
+  form.append('file', file, file.name)
   form.append('model', 'whisper-large-v3-turbo')
 
   const res = await fetch(`${GROQ_URL}/audio/transcriptions`, {

@@ -29,17 +29,55 @@ export default function Home() {
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [playingId, setPlayingId] = useState<string | null>(null)
+  const [waveform, setWaveform] = useState<number[]>([])
+  const [reviewPlaying, setReviewPlaying] = useState(false)
+  const [reviewProgress, setReviewProgress] = useState(0)
+  const [transcribing, setTranscribing] = useState(false)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pendingWavRef = useRef<{ blob: Blob; fileName: string } | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const reviewAudioRef = useRef<HTMLAudioElement | null>(null)
+  const reviewRafRef = useRef<number | null>(null)
 
   useEffect(() => {
     loadSubmissions()
-    return () => { audioRef.current?.pause() }
+    return () => {
+      audioRef.current?.pause()
+      reviewAudioRef.current?.pause()
+      if (reviewRafRef.current) cancelAnimationFrame(reviewRafRef.current)
+    }
   }, [])
+
+  function toggleReviewPlay() {
+    const audio = reviewAudioRef.current
+    if (!audio) return
+    if (reviewPlaying) {
+      audio.pause()
+      if (reviewRafRef.current) cancelAnimationFrame(reviewRafRef.current)
+      setReviewPlaying(false)
+    } else {
+      audio.play()
+      setReviewPlaying(true)
+      const tick = () => {
+        if (!audio || audio.paused) return
+        setReviewProgress(audio.currentTime / (audio.duration || 1))
+        reviewRafRef.current = requestAnimationFrame(tick)
+      }
+      reviewRafRef.current = requestAnimationFrame(tick)
+    }
+  }
+
+  function seekReview(e: React.MouseEvent<HTMLDivElement>) {
+    const audio = reviewAudioRef.current
+    if (!audio) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const ratio = (e.clientX - rect.left) / rect.width
+    audio.currentTime = ratio * (audio.duration || 0)
+    setReviewProgress(ratio)
+  }
 
   function toggleExpanded(id: string) {
     setExpandedIds(prev => {
@@ -134,21 +172,38 @@ export default function Home() {
     setPhase('processing')
     try {
       const rawBlob = new Blob(chunks, { type: mimeType || 'audio/webm' })
-      const wavBlob = await blobToWav(rawBlob)
+      const { wav: wavBlob, waveform: waveData } = await blobToWav(rawBlob)
 
       const safeName = username.replace(/[^a-z0-9]/gi, '_').toLowerCase()
       const fileName = `${Date.now()}-${safeName}.wav`
       pendingWavRef.current = { blob: wavBlob, fileName }
+      setWaveform(waveData)
 
+      // Set up preview audio and show review immediately
+      reviewAudioRef.current?.pause()
+      const url = URL.createObjectURL(wavBlob)
+      const previewAudio = new Audio(url)
+      previewAudio.onended = () => {
+        setReviewPlaying(false)
+        setReviewProgress(1)
+      }
+      reviewAudioRef.current = previewAudio
+      setReviewProgress(0)
+      setTranscription('')
+      setTranscribing(true)
+      setPhase('review')
+
+      // Transcribe in background using the original blob (correct MIME type → correct Groq filename)
       const formData = new FormData()
-      formData.append('audio', wavBlob, 'recording.wav')
+      const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('ogg') ? 'ogg' : 'wav'
+      formData.append('audio', rawBlob, `recording.${ext}`)
       const transcribeRes = await fetch('/api/transcribe', { method: 'POST', body: formData })
       const transcribeJson = await transcribeRes.json()
       setTranscription(transcribeJson.text ?? '')
-
-      setPhase('review')
+      setTranscribing(false)
     } catch (err) {
       console.error(err)
+      setTranscribing(false)
       setErrorMsg(err instanceof Error ? err.message : 'Something went wrong')
       setPhase('error')
     }
@@ -186,6 +241,12 @@ export default function Home() {
   }
 
   const reset = () => {
+    reviewAudioRef.current?.pause()
+    if (reviewRafRef.current) cancelAnimationFrame(reviewRafRef.current)
+    reviewAudioRef.current = null
+    setReviewPlaying(false)
+    setReviewProgress(0)
+    setWaveform([])
     setPhase('idle')
     setTimeLeft(5)
     setTranscription('')
@@ -334,12 +395,66 @@ export default function Home() {
 
         {phase === 'review' && (
           <div className="flex flex-col items-center gap-4 w-full max-w-sm">
-            <div className="w-full bg-white border border-ph-divider rounded-2xl p-5 text-center">
-              <p className="text-ph-text/40 text-xs uppercase tracking-widest mb-2 font-semibold">you said</p>
-              <p className="text-ph-text text-lg font-medium leading-snug">
-                {transcription || <span className="text-ph-gray italic text-base">nothing detected</span>}
-              </p>
+            {/* Waveform player card */}
+            <div className="w-full bg-white border border-ph-divider rounded-2xl p-4">
+              {/* Waveform bars */}
+              <div
+                className="flex items-center gap-px h-14 cursor-pointer mb-3 select-none"
+                onClick={seekReview}
+                title="Click to seek"
+              >
+                {waveform.map((amp, i) => {
+                  const played = reviewProgress > i / waveform.length
+                  return (
+                    <div
+                      key={i}
+                      className="flex-1 rounded-sm transition-colors duration-75"
+                      style={{
+                        height: `${Math.max(10, amp * 100)}%`,
+                        backgroundColor: played ? '#F54E00' : '#D0D1C9',
+                        opacity: played ? 1 : 0.5,
+                      }}
+                    />
+                  )
+                })}
+              </div>
+
+              {/* Play controls */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={toggleReviewPlay}
+                  className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-all active:scale-95"
+                  style={{ backgroundColor: '#F54E00' }}
+                >
+                  {reviewPlaying ? (
+                    <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="4" width="4" height="16" rx="1" />
+                      <rect x="14" y="4" width="4" height="16" rx="1" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5 text-white translate-x-px" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  )}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-ph-text/40 text-xs uppercase tracking-widest font-semibold mb-0.5">you said</p>
+                  {transcribing ? (
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-ph-red animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-ph-red animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-ph-red animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  ) : (
+                    <p className="text-ph-text text-sm font-medium leading-snug truncate">
+                      {transcription || <span className="text-ph-gray italic">nothing detected</span>}
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
+
+            {/* Action buttons */}
             <div className="flex items-center gap-3">
               <button
                 onClick={submitRecording}
