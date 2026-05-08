@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ph-bg: #EEEFE9;
+  --ph-text: #151515;
+  --ph-accent: #E5E7E0;
+  --ph-divider: #D0D1C9;
+  --ph-red: #F54E00;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--ph-bg);
+  color: rgba(21, 21, 21, 0.9);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
